@@ -13,14 +13,19 @@ export default {
     const url = new URL(request.url)
 
     if (url.pathname === "/api/health") {
-      return json({ online: true, world: [SIZE, SIZE, SIZE], maxAnts: MAX_ANTS, colors: COLORS })
+      return json({
+        online: true,
+        world: [SIZE, SIZE, SIZE],
+        maxAnts: MAX_ANTS,
+        colors: COLORS
+      })
     }
 
     const match = url.pathname.match(/^\/room\/([A-Za-z0-9]{4,12})$/)
 
     if (match) {
       if (request.headers.get("Upgrade") !== "websocket") {
-        return json({ error: "WebSocket connection required" }, 426)
+        return json({ error: "WebSocket required" }, 426)
       }
 
       const id = env.ROOMS.idFromName(match[1].toUpperCase())
@@ -77,15 +82,7 @@ export class Room {
   }
 
   ants() {
-    return [...this.players.values()].map(p => ({
-      id: p.id,
-      x: p.x,
-      y: p.y,
-      z: p.z,
-      direction: p.direction,
-      color: p.color,
-      name: p.name
-    }))
+    return [...this.players.values()]
   }
 
   send(ws, data) {
@@ -104,19 +101,35 @@ export class Room {
     }
   }
 
+  driverId() {
+    const sockets = this.ctx.getWebSockets()
+    return sockets[0]?.deserializeAttachment()?.id ?? null
+  }
+
+  broadcastDriver() {
+    const id = this.driverId()
+
+    this.broadcast({
+      type: "driver",
+      playerId: id
+    })
+  }
+
   async fetch(request) {
     await this.ready
-
-    const pair = new WebSocketPair()
-    const client = pair[0]
-    const server = pair[1]
 
     if (this.players.size >= MAX_ANTS) {
       return json({ error: "Room is full", maxAnts: MAX_ANTS }, 409)
     }
 
+    const url = new URL(request.url)
+    const pair = new WebSocketPair()
+    const client = pair[0]
+    const server = pair[1]
+
     const id = crypto.randomUUID()
     const color = this.players.size % COLORS
+
     const player = {
       id,
       x: Math.floor(Math.random() * SIZE),
@@ -124,7 +137,7 @@ export class Room {
       z: Math.floor(Math.random() * SIZE),
       direction: Math.floor(Math.random() * 6),
       color,
-      name: new URL(request.url).searchParams.get("name")?.slice(0, 20) || "Ant"
+      name: (url.searchParams.get("name") || "Ant").slice(0, 20)
     }
 
     this.players.set(id, player)
@@ -136,17 +149,26 @@ export class Room {
     this.send(server, {
       type: "welcome",
       playerId: id,
-      driver: this.ctx.getWebSockets().length === 1,
       size: SIZE,
       colors: COLORS,
+      driver: this.driverId() === id,
       ants: this.ants(),
-      cells: [...this.cells.entries()].map(([key, color]) => [key, color]),
-      moves: this.moves
+      cells: [...this.cells.entries()],
+      moves: this.moves,
+      voxelCount: this.cells.size
     })
 
-    this.broadcast({ type: "ants", ants: this.ants() })
+    this.broadcast({
+      type: "ants",
+      ants: this.ants()
+    })
 
-    return new Response(null, { status: 101, webSocket: client })
+    this.broadcastDriver()
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client
+    })
   }
 
   async webSocketMessage(ws, message) {
@@ -160,14 +182,48 @@ export class Room {
       return
     }
 
-    if (data.type !== "tick") return
-
     const attachment = ws.deserializeAttachment()
-    const driver = this.ctx.getWebSockets()[0]?.deserializeAttachment()?.id
 
-    if (!attachment || attachment.id !== driver) return
+    if (!attachment?.id) return
 
-    const count = Math.max(1, Math.min(MAX_BATCH, Math.floor(Number(data.count) || 1)))
+    if (data.type === "reset") {
+      if (attachment.id !== this.driverId()) return
+
+      this.cells.clear()
+      this.moves = 0
+
+      this.sql.exec("DELETE FROM cells")
+
+      for (const p of this.players.values()) {
+        p.x = Math.floor(Math.random() * SIZE)
+        p.y = Math.floor(Math.random() * SIZE)
+        p.z = Math.floor(Math.random() * SIZE)
+        p.direction = Math.floor(Math.random() * 6)
+        this.savePlayer(p)
+      }
+
+      this.sql.exec(
+        "INSERT OR REPLACE INTO metadata (id, moves) VALUES (1, 0)"
+      )
+
+      this.broadcast({
+        type: "reset",
+        ants: this.ants(),
+        moves: 0,
+        voxelCount: 0
+      })
+
+      return
+    }
+
+    if (data.type !== "tick") return
+    if (attachment.id !== this.driverId()) return
+
+    const count = Math.max(
+      1,
+      Math.min(MAX_BATCH, Math.floor(Number(data.count) || 1))
+    )
+
     const changed = new Map()
 
     for (let step = 0; step < count; step++) {
@@ -195,12 +251,15 @@ export class Room {
 
     this.moves += count * this.players.size
 
-    for (const p of this.players.values()) this.savePlayer(p)
+    for (const p of this.players.values()) {
+      this.savePlayer(p)
+    }
 
     for (const [key, color] of changed) {
       this.sql.exec(
         "INSERT OR REPLACE INTO cells (id, color) VALUES (?, ?)",
-        key, color
+        key,
+        color
       )
     }
 
@@ -213,7 +272,8 @@ export class Room {
       type: "update",
       cells: [...changed.entries()],
       ants: this.ants(),
-      moves: this.moves
+      moves: this.moves,
+      voxelCount: this.cells.size
     })
   }
 
@@ -221,6 +281,7 @@ export class Room {
     await this.ready
 
     const attachment = ws.deserializeAttachment()
+
     if (!attachment?.id) return
 
     this.players.delete(attachment.id)
@@ -230,9 +291,11 @@ export class Room {
       type: "ants",
       ants: this.ants()
     })
+
+    this.broadcastDriver()
   }
 
   async webSocketError(ws) {
     await this.webSocketClose(ws)
   }
-}
+            }
