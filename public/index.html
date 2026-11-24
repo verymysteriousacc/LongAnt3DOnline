@@ -1,84 +1,418 @@
-<!DOCTYPE html>                                                 <html lang="en">                                                <head>                                                          <meta charset="UTF-8">                                          <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">                            <title>RGBAnt 3D</title>                                        <script type="importmap">                                       {                                                                 "imports": {                                                      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js"                                                   }                                                             }                                                               </script>                                                       <style>                                                         *{box-sizing:border-box}                                        html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080b12;color:#e8efff;font-family:Arial,sans-serif}        canvas{display:block}                                           #ui{position:fixed;inset:0;pointer-events:none}                 #top{position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:space-between;gap:8px}                        .panel{background:rgba(12,17,28,.9);border:1px solid #26334a;border-radius:10px;padding:10px}                                   #brand{font-size:14px;font-weight:bold;letter-spacing:2px}      #status{font-size:10px;color:#9eabc2;margin-top:4px}            #stats{font-size:10px;text-align:right;color:#aab9d4;line-height:1.7}                                                           #bottom{position:absolute;left:12px;right:12px;bottom:12px;display:flex;flex-direction:column;gap:9px}                          #controls{display:flex;gap:7px;flex-wrap:wrap;pointer-events:auto}                                                              button{background:#18243a;border:1px solid #344767;color:#e8efff;padding:10px 13px;border-radius:7px;font-weight:bold;font-size:12px}                                                           #speedbox{display:flex;align-items:center;gap:10px;pointer-events:auto}                                                         #speedbox input{flex:1;min-width:0;accent-color:#60a5fa}        #speedvalue{font-size:12px;min-width:65px;text-align:right}     #hint{font-size:10px;color:#7f91ad;text-align:center}           #loading{position:absolute;inset:0;display:grid;place-items:center;background:#080b12;font-size:13px;letter-spacing:1px;z-index:5;padding:25px;text-align:center;white-space:pre-wrap}          </style>                                                        </head>                                                         <body>                                                          <div id="loading">INITIALIZING 3D WORLD...</div>                <div id="ui">                                                   <div id="top">                                                  <div class="panel">                                             <div id="brand">RGBAnt / 3D</div>                               <div id="status">128³ SIMULATION</div>                          </div>                                                          <div class="panel" id="stats">                                  <div id="moves">MOVES 0</div>                                   <div id="voxels">VOXELS 0</div>                                 <div id="ants">ANTS 1 / 25</div>                                </div>                                                          </div>                                                          <div id="bottom">                                               <div class="panel" id="speedbox">                               <span>SPEED</span>                                              <input id="speed" type="range" min="1" max="256" value="1">     <span id="speedvalue">1 / 256</span>                            </div>                                                          <div id="controls">                                             <button id="add">+ ANT</button>                                 <button id="remove">- ANT</button>                              <button id="reset">RESET</button>                               <button id="home">CENTER</button>                               </div>                                                          <div class="panel" id="hint">DRAG TO ROTATE · PINCH TO ZOOM · TWO FINGERS TO PAN</div>                                          </div>                                                          </div>                                                          <script type="module">                                          const loading=document.getElementById("loading");               const status=document.getElementById("status");                 function fail(error){                                            loading.textContent="INITIALIZATION ERROR\n"+String(error);     status.textContent="ERROR";                                    }                                                               window.addEventListener("error",e=>fail(e.message));            window.addEventListener("unhandledrejection",e=>fail(e.reason));                                                                try{                                                             const THREE=await import("three");                              const {OrbitControls}=await import("https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/controls/OrbitControls.js");                                                                        const SIZE=128;                                                 const HALF=63.5;                                                const COLORS=[0xff4545,0xff922e,0xffdc42,0x7de35c,0x20d6a2,0x28c8ed,0x3985ff,0x8d63ff,0xd65cff,0xff62bd];                                                                                       const scene=new THREE.Scene();                                  scene.background=new THREE.Color(0x080b12);                     const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.1,1000);                                                    camera.position.set(155,145,175);                                                                                               const renderer=new THREE.WebGLRenderer({antialias:false,powerPreference:"high-performance"});                                   renderer.setPixelRatio(Math.min(devicePixelRatio,1.25));        renderer.setSize(innerWidth,innerHeight);                       renderer.outputColorSpace=THREE.SRGBColorSpace;                 document.body.appendChild(renderer.domElement);                                                                                 const controls=new OrbitControls(camera,renderer.domElement);   controls.target.set(0,0,0);                                     controls.enableDamping=true;                                    controls.dampingFactor=.07;                                     controls.minDistance=8;                                         controls.maxDistance=350;                                      
- scene.add(new THREE.AmbientLight(0xffffff,1.3));                const light=new THREE.DirectionalLight(0xffffff,1.5);
- light.position.set(100,180,120);                                scene.add(light);
-                                                                 const grid=new THREE.GridHelper(SIZE,16,0x263650,0x172338);
- grid.position.y=-HALF-.5;                                       scene.add(grid);
-                                                                 scene.add(new THREE.Box3Helper(new THREE.Box3(
-  new THREE.Vector3(-HALF-.5,-HALF-.5,-HALF-.5),                  new THREE.Vector3(HALF+.5,HALF+.5,HALF+.5)
- ),0x263b58));                                                  
- const cube=new THREE.BoxGeometry(.94,.94,.94);                  const materials=COLORS.map(color=>new THREE.MeshStandardMaterial({color,roughness:.8,metalness:.02}));                          const meshes=[];
- const capacities=Array(10).fill(64);                            const slots=Array.from({length:10},()=>[]);
- const cellMap=new Map();                                        const dummy=new THREE.Object3D();
-                                                                 function createMesh(color,capacity){                             const mesh=new THREE.InstancedMesh(cube,materials[color],capacity);
-  mesh.count=0;                                                   mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  mesh.frustumCulled=false;                                       scene.add(mesh);
-  return mesh;                                                   }
- for(let i=0;i<10;i++)meshes.push(createMesh(i,64));            
- function growMesh(color,required){                               const old=meshes[color];
-  let capacity=capacities[color];                                 while(capacity<required)capacity*=2;
-  const next=createMesh(color,capacity);                          for(let i=0;i<old.count;i++){
-   old.getMatrixAt(i,dummy.matrix);                                next.setMatrixAt(i,dummy.matrix);
-  }                                                               next.count=old.count;
-  next.instanceMatrix.needsUpdate=true;                           scene.remove(old);                                              old.dispose();                                                  meshes[color]=next;
-  capacities[color]=capacity;                                    }
-                                                                 function key(x,y,z){return (x*SIZE+y)*SIZE+z}
-                                                                 function removeCell(k){                                          const item=cellMap.get(k);                                      if(!item)return;
-  const list=slots[item.color];                                   const mesh=meshes[item.color];
-  const last=list.length-1;                                       if(item.slot!==last){
-   const moved=list[last];                                         list[item.slot]=moved;
-   cellMap.get(moved).slot=item.slot;                              mesh.getMatrixAt(last,dummy.matrix);
-   mesh.setMatrixAt(item.slot,dummy.matrix);                      }
-  list.pop();                                                     mesh.count=list.length;
-  mesh.instanceMatrix.needsUpdate=true;                           cellMap.delete(k);
- }                                                              
- function setCell(x,y,z,color){                                   const k=key(x,y,z);
-  const old=cellMap.get(k);                                       if(old&&old.color===color)return;                               if(old)removeCell(k);                                           const list=slots[color];
-  if(list.length>=capacities[color])growMesh(color,list.length+1);
-  const mesh=meshes[color];                                       const slot=list.length;
-  dummy.position.set(x-HALF,y-HALF,z-HALF);                       dummy.rotation.set(0,0,0);
-  dummy.scale.set(1,1,1);                                         dummy.updateMatrix();
-  mesh.setMatrixAt(slot,dummy.matrix);                            mesh.count=slot+1;
-  mesh.instanceMatrix.needsUpdate=true;                           list.push(k);
-  cellMap.set(k,{color,slot});                                   }
-                                                                 function clearCells(){
-  cellMap.clear();                                                for(let i=0;i<10;i++){
-   slots[i].length=0;                                              meshes[i].count=0;
-   meshes[i].instanceMatrix.needsUpdate=true;                     }
- }                                                              
- const antGeometry=new THREE.SphereGeometry(.55,8,6);            const antMaterials=Array.from({length:25},(_,i)=>new THREE.MeshStandardMaterial({                                                color:new THREE.Color().setHSL(i/25,.9,.65),
-  emissive:new THREE.Color().setHSL(i/25,.9,.2)                  }));
- const antMeshes=[];                                             for(let i=0;i<25;i++){                                           const mesh=new THREE.Mesh(antGeometry,antMaterials[i]);         mesh.visible=false;
-  scene.add(mesh);                                                antMeshes.push(mesh);
- }                                                                                                                               let revision=-1;                                                let speed=1;                                                    let accumulator=0;                                              let lastFrame=performance.now();                                let lastRequest=0;                                              let busy=false;                                                                                                                 function applyData(data){                                        if(data.snapshot){                                               clearCells();
-   for(const v of data.snapshot)setCell(v[0],v[1],v[2],v[3]);     }else if(data.changes){
-   for(const v of data.changes)setCell(v[0],v[1],v[2],v[3]);      }
-  if(data.ants){                                                   for(let i=0;i<25;i++){                                           const mesh=antMeshes[i];                                        const a=data.ants[i];
-    if(!a){mesh.visible=false;continue}                             mesh.visible=true;
-    mesh.position.set(a[0]-HALF,a[1]-HALF,a[2]-HALF);              }
-  }                                                               revision=data.revision;
-  document.getElementById("moves").textContent="MOVES "+data.moves.toLocaleString();
-  document.getElementById("voxels").textContent="VOXELS "+data.voxelCount.toLocaleString();
-  document.getElementById("ants").textContent="ANTS "+data.antCount+" / 25";                                                     }                                                              
- async function requestTick(count=0){                             if(busy)return;
-  busy=true;                                                      try{                                                             const response=await fetch("/api/tick",{                         method:"POST",
-    headers:{"Content-Type":"application/json"},                    body:JSON.stringify({count,since:revision})
-   });                                                             if(!response.ok)throw new Error("API HTTP "+response.status);
-   applyData(await response.json());                              }finally{busy=false}
- }                                                              
- async function action(path){                                     if(busy)return;
-  busy=true;                                                      try{                                                             const response=await fetch(path,{method:"POST"});               if(!response.ok)throw new Error("API HTTP "+response.status);
-   applyData(await response.json());                              }finally{busy=false}
- }                                                              
- document.getElementById("speed").addEventListener("input",e=>{   speed=Number(e.target.value);                                   document.getElementById("speedvalue").textContent=speed+" / 256";
- });                                                             document.getElementById("add").onclick=()=>action("/api/add").catch(fail);                                                      document.getElementById("remove").onclick=()=>action("/api/remove").catch(fail);                                                document.getElementById("reset").onclick=()=>action("/api/reset").catch(fail);                                                  document.getElementById("home").onclick=()=>{
-  camera.position.set(155,145,175);                               controls.target.set(0,0,0);
-  controls.update();                                             };
-                                                                 await requestTick(0);
- loading.remove();                                               status.textContent="10 COLORS · 128³ WORLD";                                                                                    function animate(now){
-  requestAnimationFrame(animate);                                 const dt=Math.min((now-lastFrame)/1000,.25);                    lastFrame=now;                                                  accumulator=Math.min(accumulator+dt*speed,256);                 if(now-lastRequest>=50&&!busy){                                  const count=Math.min(256,Math.floor(accumulator));
-   if(count>0){                                                     accumulator-=count;                                             lastRequest=now;                                                requestTick(count).catch(fail);                                }                                                              }                                                               controls.update();                                              renderer.render(scene,camera);                                 }                                                               requestAnimationFrame(animate);
-                                                                 addEventListener("resize",()=>{                                  camera.aspect=innerWidth/innerHeight;                           camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth,innerHeight);                       renderer.setPixelRatio(Math.min(devicePixelRatio,1.25));
- });                                                            }catch(error){                                                   fail(error);                                                   }
-</script>                                                       </body>
-  </html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>RGBAnt 3D</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js"
+  }
+}
+</script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;overflow:hidden;background:#080b12;color:#e8efff;font-family:Arial,sans-serif}
+canvas{display:block}
+#ui{position:fixed;inset:0;pointer-events:none}
+.panel{pointer-events:auto;background:#101722eF;border:1px solid #26364b;border-radius:10px;padding:12px;backdrop-filter:blur(12px)}
+#top{position:absolute;top:12px;left:12px;right:12px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+#brand{font-weight:900;font-size:18px;letter-spacing:2px}
+#status{font-size:11px;color:#8fa8c9;margin-top:4px}
+#tag{font-size:11px;color:#61d6ff;margin-top:5px}
+#controls{position:absolute;bottom:12px;left:12px;width:min(340px,calc(100% - 24px))}
+button{background:#1d3047;border:1px solid #38516f;color:#eaf4ff;padding:10px 12px;border-radius:7px;font-weight:bold;cursor:pointer}
+button:active{background:#31577e}
+button:disabled{opacity:.4}
+.buttons{display:flex;gap:7px;flex-wrap:wrap}
+.buttons button{flex:1}
+#speedrow{display:flex;align-items:center;gap:10px;margin:12px 0 8px}
+#speed{width:100%;accent-color:#53caff}
+#speedvalue{min-width:35px;text-align:right;font-size:12px}
+#stats{font-size:11px;color:#8fa8c9;margin-top:8px}
+#chat{position:absolute;right:12px;top:76px;width:min(340px,calc(100% - 24px));height:300px;display:flex;flex-direction:column}
+#chathead{font-weight:bold;font-size:12px;letter-spacing:1px;margin-bottom:8px}
+#messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:7px;font-size:12px;min-height:0}
+.msg{overflow-wrap:anywhere;line-height:1.4}
+.msg .who{color:#61d6ff;font-weight:bold}
+.msg.system{color:#8a9bb0;font-style:italic}
+#chatform{display:flex;gap:6px;margin-top:10px}
+#chatinput{min-width:0;flex:1;background:#080e18;border:1px solid #30445d;border-radius:7px;color:white;padding:10px;outline:none}
+#chatinput:focus{border-color:#53caff}
+#hint{position:absolute;bottom:12px;right:12px;color:#8295ad;font-size:10px;text-align:right;pointer-events:none}
+#mobilechat{display:none}
+@media(max-width:600px){
+#chat{display:none;top:auto;bottom:76px;right:12px;height:260px}
+#chat.open{display:flex}
+#mobilechat{display:block}
+#hint{display:none}
+#brand{font-size:15px}
+#controls{width:calc(100% - 24px)}
+}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="top">
+    <div class="panel">
+      <div id="brand">RGBAnt <span style="color:#53caff">3D</span></div>
+      <div id="status">CONNECTING...</div>
+      <div id="tag">TAG: GENERATING...</div>
+    </div>
+    <div class="buttons">
+      <button id="invite">INVITE</button>
+      <button id="mobilechat">CHAT</button>
+      <button id="leave">LEAVE</button>
+    </div>
+  </div>
+  <div id="chat" class="panel">
+    <div id="chathead">ROOM CHAT</div>
+    <div id="messages"></div>
+    <form id="chatform">
+      <input id="chatinput" maxlength="180" placeholder="Message..." autocomplete="off">
+      <button type="submit">SEND</button>
+    </form>
+  </div>
+  <div id="controls" class="panel">
+    <div class="buttons">
+      <button id="reset">RESET WORLD</button>
+      <button id="center">CENTER VIEW</button>
+    </div>
+    <div id="speedrow">
+      <label for="speed">SPEED</label>
+      <input id="speed" type="range" min="1" max="256" value="1">
+      <span id="speedvalue">1</span>
+    </div>
+    <div id="stats">MOVES: 0 | VOXELS: 0 | ANTS: 0</div>
+  </div>
+  <div id="hint">DRAG: ROTATE · PINCH: ZOOM · TWO FINGERS: PAN</div>
+</div>
+<script type="module">
+const THREE=await import("three");
+const {OrbitControls}=await import("https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/controls/OrbitControls.js");
+
+const SIZE=128;
+const COLORS=10;
+const palette=[
+0x50c8ff,0xff5470,0x9b75ff,0x55e6a5,0xffc857,
+0xff8b45,0x65a4ff,0xe879f9,0xd5ed65,0xffffff
+];
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x080b12);
+
+const camera=new THREE.PerspectiveCamera(60,innerWidth/innerHeight,.1,1000);
+camera.position.set(170,150,190);
+
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+controls.dampingFactor=.08;
+controls.target.set(SIZE/2,SIZE/2,SIZE/2);
+controls.minDistance=20;
+controls.maxDistance=500;
+
+scene.add(new THREE.AmbientLight(0xffffff,.8));
+const light=new THREE.DirectionalLight(0xffffff,1.3);
+light.position.set(100,180,120);
+scene.add(light);
+
+const grid=new THREE.GridHelper(SIZE,16,0x28415b,0x18283b);
+grid.position.set(SIZE/2,-.5,SIZE/2);
+scene.add(grid);
+
+const edges=new THREE.LineSegments(
+new THREE.EdgesGeometry(new THREE.BoxGeometry(SIZE,SIZE,SIZE)),
+new THREE.LineBasicMaterial({color:0x42617e,transparent:true,opacity:.5})
+);
+edges.position.set(SIZE/2,SIZE/2,SIZE/2);
+scene.add(edges);
+
+const cube=new THREE.BoxGeometry(1,1,1);
+const materials=palette.map(c=>new THREE.MeshStandardMaterial({color:c,roughness:.55,metalness:.05}));
+const meshes=materials.map(m=>{
+const mesh=new THREE.InstancedMesh(cube,m,1024);
+mesh.count=0;
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(mesh);
+return mesh;
+});
+
+const dummy=new THREE.Object3D();
+const cells=new Map();
+const antMeshes=new Map();
+let ants=[];
+let socket=null;
+let myId=null;
+let myTag="...";
+let isDriver=false;
+let connected=false;
+let moves=0;
+let voxelCount=0;
+let stopped=false;
+let lastTick=0;
+let tickTimer=0;
+
+const status=document.getElementById("status");
+const tagEl=document.getElementById("tag");
+const stats=document.getElementById("stats");
+const speed=document.getElementById("speed");
+const speedvalue=document.getElementById("speedvalue");
+const messages=document.getElementById("messages");
+const chat=document.getElementById("chat");
+
+function key(x,y,z){
+return x+SIZE*(y+SIZE*z);
+}
+
+function coords(k){
+const x=k%SIZE;
+const y=Math.floor(k/SIZE)%SIZE;
+const z=Math.floor(k/(SIZE*SIZE));
+return{x,y,z};
+}
+
+function setCell(k,color){
+cells.set(Number(k),Number(color)%COLORS);
+}
+
+function renderCells(){
+const grouped=Array.from({length:COLORS},()=>[]);
+for(const [k,c] of cells){
+grouped[c].push(k);
+}
+for(let c=0;c<COLORS;c++){
+const list=grouped[c];
+const mesh=meshes[c];
+if(list.length>mesh.instanceMatrix.count){
+let capacity=Math.max(1024,mesh.instanceMatrix.count);
+while(capacity<list.length)capacity*=2;
+mesh.dispose();
+const replacement=new THREE.InstancedMesh(cube,materials[c],capacity);
+replacement.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.remove(mesh);
+meshes[c]=replacement;
+scene.add(replacement);
+}
+const target=meshes[c];
+target.count=list.length;
+for(let i=0;i<list.length;i++){
+const p=coords(list[i]);
+dummy.position.set(p.x+.5,p.y+.5,p.z+.5);
+dummy.updateMatrix();
+target.setMatrixAt(i,dummy.matrix);
+}
+target.instanceMatrix.needsUpdate=true;
+target.computeBoundingSphere();
+}
+voxelCount=cells.size;
+}
+
+function updateAnts(list){
+ants=list||[];
+const keep=new Set();
+for(const ant of ants){
+const id=ant.id;
+if(!id)continue;
+keep.add(id);
+let mesh=antMeshes.get(id);
+if(!mesh){
+mesh=new THREE.Mesh(
+new THREE.SphereGeometry(.65,12,10),
+new THREE.MeshStandardMaterial({color:palette[ant.color%COLORS],emissive:palette[ant.color%COLORS],emissiveIntensity:.3})
+);
+scene.add(mesh);
+antMeshes.set(id,mesh);
+}
+mesh.position.set(ant.x+.5,ant.y+.5,ant.z+.5);
+mesh.material.color.setHex(palette[(ant.color||0)%COLORS]);
+mesh.material.emissive.setHex(palette[(ant.color||0)%COLORS]);
+}
+for(const [id,mesh] of antMeshes){
+if(!keep.has(id)){
+scene.remove(mesh);
+mesh.geometry.dispose();
+mesh.material.dispose();
+antMeshes.delete(id);
+}
+}
+stats.textContent=`MOVES: ${moves.toLocaleString()} | VOXELS: ${voxelCount.toLocaleString()} | ANTS: ${ants.length}`;
+}
+
+function send(data){
+if(socket&&socket.readyState===WebSocket.OPEN){
+socket.send(JSON.stringify(data));
+}
+}
+
+function addMessage(tag,message,system=false){
+const div=document.createElement("div");
+div.className=system?"msg system":"msg";
+if(system){
+div.textContent=message;
+}else{
+const who=document.createElement("span");
+who.className="who";
+who.textContent=tag+" ";
+const body=document.createElement("span");
+body.textContent=message;
+div.append(who,body);
+}
+messages.appendChild(div);
+while(messages.children.length>60)messages.firstChild.remove();
+messages.scrollTop=messages.scrollHeight;
+}
+
+function connect(){
+const room=(location.hash.slice(1)||Math.random().toString(36).slice(2,8)).toUpperCase();
+if(!location.hash)location.hash=room;
+status.textContent="CONNECTING · "+room;
+socket=new WebSocket(`wss://${location.host}/room/${room}`);
+
+socket.onopen=()=>{
+connected=true;
+status.textContent="CONNECTED · "+room;
+};
+
+socket.onmessage=event=>{
+let data;
+try{data=JSON.parse(event.data)}catch{return}
+
+if(data.type==="welcome"){
+myId=data.id;
+myTag=data.tag||"UNKNOWN";
+tagEl.textContent="TAG: "+myTag;
+cells.clear();
+for(const v of data.cells||[])setCell(v[0],v[1]);
+renderCells();
+moves=data.moves||0;
+updateAnts(data.ants||[]);
+isDriver=!!data.driver;
+for(const item of data.chat||[]){
+addMessage(item.tag,item.message);
+}
+status.textContent="CONNECTED · "+room+(isDriver?" · DRIVER":"");
+}
+
+if(data.type==="update"){
+for(const v of data.cells||[])setCell(v[0],v[1]);
+renderCells();
+moves=data.moves||moves;
+if(data.ants)updateAnts(data.ants);
+else stats.textContent=`MOVES: ${moves.toLocaleString()} | VOXELS: ${cells.size.toLocaleString()} | ANTS: ${ants.length}`;
+}
+
+if(data.type==="ants"){
+updateAnts(data.ants||[]);
+}
+
+if(data.type==="driver"){
+isDriver=!!data.driver;
+status.textContent="CONNECTED · "+room+(isDriver?" · DRIVER":"");
+}
+
+if(data.type==="chat"){
+addMessage(data.tag,data.message);
+}
+
+if(data.type==="system"){
+addMessage("",data.message,true);
+}
+
+if(data.type==="reset"){
+cells.clear();
+renderCells();
+moves=0;
+if(data.ants)updateAnts(data.ants);
+}
+};
+
+socket.onclose=()=>{
+connected=false;
+status.textContent="DISCONNECTED";
+};
+
+socket.onerror=()=>{
+status.textContent="CONNECTION ERROR";
+};
+}
+
+function tick(){
+if(!connected||!isDriver||stopped)return;
+const now=performance.now();
+const amount=Number(speed.value);
+const delay=Math.max(1,1000/amount);
+if(now-lastTick>=delay){
+lastTick=now;
+send({type:"tick",count:1});
+}
+}
+
+function animate(){
+requestAnimationFrame(animate);
+controls.update();
+tick();
+renderer.render(scene,camera);
+}
+animate();
+
+speed.addEventListener("input",()=>{
+speedvalue.textContent=speed.value;
+});
+
+document.getElementById("invite").onclick=async()=>{
+try{
+await navigator.clipboard.writeText(location.href);
+document.getElementById("invite").textContent="COPIED!";
+setTimeout(()=>document.getElementById("invite").textContent="INVITE",1200);
+}catch{
+prompt("Copy room link:",location.href);
+}
+};
+
+document.getElementById("leave").onclick=()=>{
+stopped=true;
+if(socket)socket.close();
+status.textContent="LEFT ROOM";
+};
+
+document.getElementById("reset").onclick=()=>{
+if(isDriver)send({type:"reset"});
+};
+
+document.getElementById("center").onclick=()=>{
+camera.position.set(170,150,190);
+controls.target.set(SIZE/2,SIZE/2,SIZE/2);
+controls.update();
+};
+
+document.getElementById("mobilechat").onclick=()=>{
+chat.classList.toggle("open");
+};
+
+document.getElementById("chatform").addEventListener("submit",event=>{
+event.preventDefault();
+const input=document.getElementById("chatinput");
+const message=input.value.trim();
+if(!message)return;
+send({type:"chat",message});
+input.value="";
+});
+
+addEventListener("resize",()=>{
+camera.aspect=innerWidth/innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(innerWidth,innerHeight);
+});
+
+connect();
+</script>
+</body>
+ </html>
