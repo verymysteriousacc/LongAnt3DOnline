@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/wrangler@latest/config-schema.json",
-  "name": "rgbant-multiplayer",
+  "name": "longant3donline",
   "main": "worker.js",
   "compatibility_date": "2026-11-24",
   "assets": {
@@ -16,10 +16,10 @@
       }
     ]
   },
-  "exports": {
-    "Room": {
-      "type": "durable-object",
-      "storage": "sqlite"
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Room"]
     }
-  }
+  ]
 }
