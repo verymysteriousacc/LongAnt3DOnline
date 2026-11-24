@@ -1,7 +1,9 @@
+
 const SIZE = 128
 const MAX_ANTS = 25
 const MAX_BATCH = 256
 const COLORS = 10
+const MAX_CHAT = 180
 
 const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -17,7 +19,8 @@ export default {
         online: true,
         world: [SIZE, SIZE, SIZE],
         maxAnts: MAX_ANTS,
-        colors: COLORS
+        colors: COLORS,
+        chat: true
       })
     }
 
@@ -42,18 +45,24 @@ export class Room {
     this.sql = ctx.storage.sql
     this.cells = new Map()
     this.players = new Map()
+    this.lastChat = new Map()
     this.moves = 0
 
     this.sql.exec("CREATE TABLE IF NOT EXISTS cells (id INTEGER PRIMARY KEY, color INTEGER NOT NULL)")
-    this.sql.exec("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, direction INTEGER NOT NULL, color INTEGER NOT NULL, name TEXT NOT NULL)")
+    this.sql.exec("CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY, x INTEGER NOT NULL, y INTEGER NOT NULL, z INTEGER NOT NULL, direction INTEGER NOT NULL, color INTEGER NOT NULL, name TEXT NOT NULL, tag TEXT NOT NULL DEFAULT 'ANT-000000')")
     this.sql.exec("CREATE TABLE IF NOT EXISTS metadata (id INTEGER PRIMARY KEY, moves INTEGER NOT NULL)")
+    this.sql.exec("CREATE TABLE IF NOT EXISTS chat (id INTEGER PRIMARY KEY AUTOINCREMENT, tag TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL)")
+
+    try {
+      this.sql.exec("ALTER TABLE players ADD COLUMN tag TEXT NOT NULL DEFAULT 'ANT-000000'")
+    } catch {}
 
     this.ready = ctx.blockConcurrencyWhile(async () => {
       for (const row of this.sql.exec("SELECT id, color FROM cells").toArray()) {
         this.cells.set(row.id, row.color)
       }
 
-      for (const row of this.sql.exec("SELECT id, x, y, z, direction, color, name FROM players").toArray()) {
+      for (const row of this.sql.exec("SELECT id, x, y, z, direction, color, name, tag FROM players").toArray()) {
         this.players.set(row.id, {
           id: row.id,
           x: row.x,
@@ -61,7 +70,8 @@ export class Room {
           z: row.z,
           direction: row.direction,
           color: row.color,
-          name: row.name
+          name: row.name,
+          tag: row.tag
         })
       }
 
@@ -76,13 +86,19 @@ export class Room {
 
   savePlayer(p) {
     this.sql.exec(
-      "INSERT OR REPLACE INTO players (id, x, y, z, direction, color, name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      p.id, p.x, p.y, p.z, p.direction, p.color, p.name
+      "INSERT OR REPLACE INTO players (id, x, y, z, direction, color, name, tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      p.id, p.x, p.y, p.z, p.direction, p.color, p.name, p.tag
     )
   }
 
   ants() {
     return [...this.players.values()]
+  }
+
+  chatHistory() {
+    return this.sql.exec(
+      "SELECT tag, message, created_at FROM chat ORDER BY id DESC LIMIT 40"
+    ).toArray().reverse()
   }
 
   send(ws, data) {
@@ -107,11 +123,9 @@ export class Room {
   }
 
   broadcastDriver() {
-    const id = this.driverId()
-
     this.broadcast({
       type: "driver",
-      playerId: id
+      playerId: this.driverId()
     })
   }
 
@@ -128,6 +142,7 @@ export class Room {
     const server = pair[1]
 
     const id = crypto.randomUUID()
+    const tag = "ANT-" + crypto.randomUUID().replaceAll("-", "").slice(0, 6).toUpperCase()
     const color = this.players.size % COLORS
 
     const player = {
@@ -137,7 +152,8 @@ export class Room {
       z: Math.floor(Math.random() * SIZE),
       direction: Math.floor(Math.random() * 6),
       color,
-      name: (url.searchParams.get("name") || "Ant").slice(0, 20)
+      name: tag,
+      tag
     }
 
     this.players.set(id, player)
@@ -149,18 +165,25 @@ export class Room {
     this.send(server, {
       type: "welcome",
       playerId: id,
+      tag,
       size: SIZE,
       colors: COLORS,
       driver: this.driverId() === id,
       ants: this.ants(),
       cells: [...this.cells.entries()],
       moves: this.moves,
-      voxelCount: this.cells.size
+      voxelCount: this.cells.size,
+      chat: this.chatHistory()
     })
 
     this.broadcast({
       type: "ants",
       ants: this.ants()
+    })
+
+    this.broadcast({
+      type: "system",
+      message: tag + " joined the room"
     })
 
     this.broadcastDriver()
@@ -185,6 +208,47 @@ export class Room {
     const attachment = ws.deserializeAttachment()
 
     if (!attachment?.id) return
+
+    const player = this.players.get(attachment.id)
+
+    if (!player) return
+
+    if (data.type === "chat") {
+      const now = Date.now()
+      const previous = this.lastChat.get(attachment.id) || 0
+
+      if (now - previous < 700) return
+
+      const messageText = String(data.message || "").trim().slice(0, MAX_CHAT)
+
+      if (!messageText) return
+
+      this.lastChat.set(attachment.id, now)
+
+      const entry = {
+        tag: player.tag,
+        message: messageText,
+        created_at: now
+      }
+
+      this.sql.exec(
+        "INSERT INTO chat (tag, message, created_at) VALUES (?, ?, ?)",
+        entry.tag,
+        entry.message,
+        entry.created_at
+      )
+
+      this.sql.exec(
+        "DELETE FROM chat WHERE id NOT IN (SELECT id FROM chat ORDER BY id DESC LIMIT 40)"
+      )
+
+      this.broadcast({
+        type: "chat",
+        entry
+      })
+
+      return
+    }
 
     if (data.type === "reset") {
       if (attachment.id !== this.driverId()) return
@@ -284,8 +348,18 @@ export class Room {
 
     if (!attachment?.id) return
 
+    const player = this.players.get(attachment.id)
+
+    if (!player) return
+
     this.players.delete(attachment.id)
+    this.lastChat.delete(attachment.id)
     this.sql.exec("DELETE FROM players WHERE id = ?", attachment.id)
+
+    this.broadcast({
+      type: "system",
+      message: player.tag + " left the room"
+    })
 
     this.broadcast({
       type: "ants",
@@ -298,4 +372,5 @@ export class Room {
   async webSocketError(ws) {
     await this.webSocketClose(ws)
   }
-            }
+      }
+      
